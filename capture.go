@@ -27,11 +27,11 @@ func ScreenCapture(ctx context.Context, w io.Writer, fps int) {
 }
 
 type sshot struct {
-	img *image.RGBA
+	img image.RGBA
 	ts  time.Time
 }
 type tsimg struct {
-	img *image.Paletted
+	img image.Paletted
 	ts  time.Time
 }
 
@@ -69,7 +69,7 @@ loop:
 
 		//anim = append(anim, sc)
 		screens <- sshot{
-			img: sc,
+			img: *sc,
 			ts:  time.Now(),
 		}
 		i++
@@ -122,9 +122,9 @@ func quantize(screens <-chan sshot, paletteds chan<- tsimg) {
 		wg.Add(1)
 		go func() {
 			pImg := image.NewPaletted(sc.img.Bounds(), nil)
-			quantizer.Quantize(pImg, sc.img.Bounds(), sc.img, image.ZP)
+			quantizer.Quantize(pImg, sc.img.Bounds(), &sc.img, image.ZP)
 			paletteds <- tsimg{
-				img: pImg,
+				img: *pImg,
 				ts:  sc.ts,
 			}
 			log.Println("palette", i)
@@ -151,7 +151,7 @@ func gifer(imgs <-chan tsimg, out *gif.GIF, done chan<- struct{}) {
 		img := img
 		<-pool
 		go func() {
-			out.Image = append(out.Image, img.img)
+			out.Image = append(out.Image, &img.img)
 			out.Delay = append(out.Delay, 0)
 			i++
 			pool <- struct{}{}
