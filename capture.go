@@ -3,11 +3,13 @@ package demogif
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/gif"
 	"io"
 	"log"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -35,6 +37,22 @@ type tsimg struct {
 	ts  time.Time
 }
 
+type tsimgSorter struct {
+	imgs []tsimg
+}
+
+func (s *tsimgSorter) Len() int {
+	return len(s.imgs)
+}
+func (s *tsimgSorter) Swap(i, j int) {
+	s.imgs[i], s.imgs[j] = s.imgs[j], s.imgs[i]
+}
+func (s *tsimgSorter) Less(i, j int) bool {
+	cond := s.imgs[i].ts.Before(s.imgs[j].ts)
+	fmt.Printf("%s < %s : %t\n", s.imgs[i].ts, s.imgs[j].ts, cond)
+	return cond
+}
+
 // Capture captures a gif animation until the context is done.
 // The video is taken from the rect coordinates with the defined fps.
 func Capture(ctx context.Context, w io.Writer, rect image.Rectangle, fps int) {
@@ -53,29 +71,34 @@ func Capture(ctx context.Context, w io.Writer, rect image.Rectangle, fps int) {
 	go gifer(paletteds, out, done)
 
 	i := 0
+	var wg sync.WaitGroup
 loop:
-	for range frameTicker.C {
+	for t := range frameTicker.C {
 		select {
 		case <-ctx.Done():
-			close(screens)
 			break loop
 		default:
 		}
-		sc, err := screenshot.CaptureRect(rect)
-		if err != nil {
-			log.Fatal(err)
-		}
-		println("screen", i)
+		wg.Add(1)
+		go func(i int, t time.Time) {
+			sc, err := screenshot.CaptureRect(rect)
+			if err != nil {
+				log.Fatal(err)
+			}
+			println("screen", i)
 
-		//anim = append(anim, sc)
-		screens <- sshot{
-			img: *sc,
-			ts:  time.Now(),
-		}
+			//anim = append(anim, sc)
+			screens <- sshot{
+				img: *sc,
+				ts:  t.UTC(),
+			}
+			wg.Done()
+		}(i, t)
 		i++
 	}
+	wg.Wait()
+	close(screens)
 
-	var wg sync.WaitGroup
 	concurrency := runtime.NumCPU() * 2
 	pool := make(chan struct{}, concurrency)
 	for i := 0; i < concurrency; i++ {
@@ -121,6 +144,17 @@ func quantize(screens <-chan sshot, paletteds chan<- tsimg) {
 		sc := sc
 		wg.Add(1)
 		go func() {
+			rect := image.Rectangle{
+				Min: image.Point{
+					X: 0,
+					Y: 0,
+				},
+				Max: image.Point{
+					X: 800, //bounds.max.x
+					Y: 600,
+				},
+			}
+			_ = rect
 			pImg := image.NewPaletted(sc.img.Bounds(), nil)
 			quantizer.Quantize(pImg, sc.img.Bounds(), &sc.img, image.ZP)
 			paletteds <- tsimg{
@@ -145,17 +179,21 @@ func gifer(imgs <-chan tsimg, out *gif.GIF, done chan<- struct{}) {
 		pool <- struct{}{}
 	}
 
-	i := 0
+	unordered := []tsimg{}
+	println("creating gif")
 	for img := range imgs {
-		log.Println("gif", i)
+		fmt.Println("t:", img.ts)
+		unordered = append(unordered, img)
+	}
+
+	println("sort")
+	sort.Sort(&tsimgSorter{imgs: unordered})
+	for _, img := range unordered {
 		img := img
-		<-pool
-		go func() {
-			out.Image = append(out.Image, &img.img)
-			out.Delay = append(out.Delay, 0)
-			i++
-			pool <- struct{}{}
-		}()
+
+		fmt.Println("s:", img.ts)
+		out.Image = append(out.Image, &img.img)
+		out.Delay = append(out.Delay, 0)
 	}
 	done <- struct{}{}
 	close(done)
